@@ -446,7 +446,13 @@ class EchonetSensor(SensorEntity):
             self.async_schedule_update_ha_state(_force)
 
     def update_option_listener(self):
-        _should_poll = self._op_code not in self._connector._ntfPropertyMap
+        _no_poll_epcs = getattr(
+            self._connector, "_epcube_poll_excluded", frozenset()
+        )
+        _should_poll = (
+            self._op_code not in self._connector._ntfPropertyMap
+            and self._op_code not in _no_poll_epcs
+        )
         self._attr_should_poll = (
             self._connector._user_options.get(CONF_FORCE_POLLING, False) or _should_poll
         )

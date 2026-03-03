@@ -34,6 +34,7 @@ from .const import (
     CONF_ENABLE_SUPER_ENERGY,
     DOMAIN,
     ENABLE_SUPER_ENERGY_DEFAULT,
+    ENL_EPCUBE_NO_POLL_EPCS,
     ENL_OP_CODES,
     ENL_SUPER_CODES,
     ENL_SUPER_ENERGES,
@@ -483,6 +484,7 @@ class ECHONETConnector:
         self._uid = instance.get("uid")
         self._uidi = instance.get("uidi")
         self._name = instance.get("name")
+        self._epcube_poll_excluded = frozenset()
         self._api.register_async_update_callbacks(
             self._host,
             self._eojgc,
@@ -634,6 +636,12 @@ class ECHONETConnector:
             if value in self._getPropertyMap:
                 self._update_flags_full_list.append(value)
                 self._update_data[value] = None
+
+        # EP Cube (Sungrow): EPCs whose entities should not poll (entity-level should_poll = False)
+        if self._manufacturer == "Sungrow":
+            self._epcube_poll_excluded = ENL_EPCUBE_NO_POLL_EPCS
+        else:
+            self._epcube_poll_excluded = frozenset()
 
         _LOGGER.debug(
             f"Echonet device {self._host}-{self._eojgc}-{self._eojcc}-{self._eojci} update_flags_full_list: {self._update_flags_full_list}"

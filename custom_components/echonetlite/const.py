@@ -52,6 +52,20 @@ from pychonet.lib.const import (
     ENL_FAULT_STATUS,
     ENL_INSTANTANEOUS_POWER,
 )
+
+# EP Cube (Sungrow): EPCs that do not need polling (entity-level should_poll = False).
+# Static/slow-changing or flappy; entities still get updates via connector refresh.
+ENL_EPCUBE_NO_POLL_EPCS = frozenset({
+    ENL_FAULT_STATUS,  # 0x88 – fault status (can flap)
+    0xC8,  # Min/max charging electric power (static/slow)
+    0xC9,  # Min/max discharging electric power (static/slow)
+    0x82,  # Standard version information
+    0x83,  # Identification number
+    0x8A,  # Manufacturer code
+    0xDB,  # System-interconnected type (storage battery)
+    0xD0,  # System-interconnected type (solar)
+    0xE6,  # Storage battery type / rated power (solar)
+})
 from pychonet.lib.epc_functions import DATA_STATE_CLOSE, DATA_STATE_OPEN
 from pychonet.CeilingFan import (
     ENL_BUZZER,
@@ -624,6 +638,8 @@ ENL_OP_CODES = {
             0xE1: {
                 CONF_TYPE: SensorDeviceClass.ENERGY,
                 CONF_STATE_CLASS: SensorStateClass.TOTAL_INCREASING,
+                CONF_UNIT_OF_MEASUREMENT: UnitOfEnergy.KILO_WATT_HOUR,
+                CONF_MULTIPLIER: 0.001,
             },
             0xE3: {
                 CONF_TYPE: SensorDeviceClass.ENERGY,
@@ -861,6 +877,11 @@ ENL_OP_CODES = {
             0xE2: {
                 CONF_TYPE: SensorDeviceClass.ENERGY,
                 CONF_STATE_CLASS: SensorStateClass.TOTAL,
+            },
+            0xE3: {
+                CONF_MULTIPLIER: 0.1,
+                CONF_UNIT_OF_MEASUREMENT: "Ah",
+                CONF_STATE_CLASS: SensorStateClass.MEASUREMENT,
             },
             0xE4: {
                 CONF_TYPE: SensorDeviceClass.BATTERY,
