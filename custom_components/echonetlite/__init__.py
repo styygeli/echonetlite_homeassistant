@@ -12,6 +12,7 @@ from pychonet.echonetapiclient import EchonetMaxOpcError
 from pychonet.lib.epc import EPC_SUPER, EPC_CODE
 from pychonet.lib.const import VERSION, ENL_STATMAP
 from datetime import timedelta
+import time as monotonic_time
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -34,7 +35,12 @@ from .const import (
     CONF_ENABLE_SUPER_ENERGY,
     DOMAIN,
     ENABLE_SUPER_ENERGY_DEFAULT,
-    ENL_EPCUBE_NO_POLL_EPCS,
+    ENL_EPCUBE_FAST_EPCS_BY_CLASS,
+    ENL_EPCUBE_FAST_POLL_INTERVAL_SEC,
+    ENL_EPCUBE_NO_POLL_EPCS_BY_CLASS,
+    ENL_EPCUBE_SLOW_EPCS_BY_CLASS,
+    ENL_EPCUBE_SLOW_POLL_INTERVAL_SEC,
+    ENL_EPCUBE_STARTUP_EPCS_BY_CLASS,
     ENL_OP_CODES,
     ENL_SUPER_CODES,
     ENL_SUPER_ENERGES,
@@ -466,6 +472,14 @@ class ECHONETConnector:
         self._eojcc = instance["eojcc"]
         self._eojci = instance["eojci"]
         self._update_flag_batches = []
+        self._update_flag_batches_startup = []
+        self._update_flag_batches_slow = []
+        self._update_flag_batches_fast = []
+        self._update_flag_batches_normal = []
+        self._epcube_cadence_enabled = False
+        self._epcube_startup_polled = False
+        self._epcube_last_slow_poll = 0.0
+        self._epcube_last_fast_poll = 0.0
         self._update_data = {}
         self._api = hass.data[DOMAIN]["api"]
         self._update_callbacks = []
@@ -585,10 +599,9 @@ class ECHONETConnector:
 
             await self.async_update(**kwargs)
 
-    async def async_update_data(self, kwargs):
+    async def _fetch_batches(self, batches, no_request: bool) -> dict[int, Any]:
         update_data = {}
-        no_request = "no_request" in kwargs and kwargs["no_request"]
-        for i, flags in enumerate(self._update_flag_batches):
+        for i, flags in enumerate(batches):
             if i > 0:
                 # Interval 100ms to next request
                 await asyncio.sleep(0.1)
@@ -598,6 +611,76 @@ class ECHONETConnector:
                     update_data[flags[0]] = batch_data
                 elif isinstance(batch_data, dict):
                     update_data.update(batch_data)
+        return update_data
+
+    def _is_epcube_cadence_target(self) -> bool:
+        return (
+            self._manufacturer == "Sungrow"
+            and self._eojgc == 0x02
+            and self._eojcc in ENL_EPCUBE_STARTUP_EPCS_BY_CLASS
+        )
+
+    def _epcube_poll_tier(self, epc: int) -> str | None:
+        if not self._epcube_cadence_enabled:
+            return None
+        if epc in ENL_EPCUBE_STARTUP_EPCS_BY_CLASS.get(self._eojcc, frozenset()):
+            return "startup"
+        if epc in ENL_EPCUBE_SLOW_EPCS_BY_CLASS.get(self._eojcc, frozenset()):
+            return "slow"
+        if epc in ENL_EPCUBE_FAST_EPCS_BY_CLASS.get(self._eojcc, frozenset()):
+            return "fast"
+        return "normal"
+
+    def should_entity_poll(self, epc: int) -> bool:
+        tier = self._epcube_poll_tier(epc)
+        if tier in ("startup", "slow", "normal"):
+            return False
+        return True
+
+    def _select_update_batches(self, no_request: bool) -> list[list[int]]:
+        if not self._epcube_cadence_enabled:
+            return self._update_flag_batches
+
+        if no_request:
+            return (
+                self._update_flag_batches_startup
+                + self._update_flag_batches_slow
+                + self._update_flag_batches_fast
+                + self._update_flag_batches_normal
+            )
+
+        now = monotonic_time.monotonic()
+        batches = []
+
+        # Startup-only EPCs are requested exactly once at startup.
+        if not self._epcube_startup_polled:
+            batches.extend(self._update_flag_batches_startup)
+            batches.extend(self._update_flag_batches_slow)
+            batches.extend(self._update_flag_batches_fast)
+            batches.extend(self._update_flag_batches_normal)
+            self._epcube_startup_polled = True
+            self._epcube_last_slow_poll = now
+            self._epcube_last_fast_poll = now
+            return batches
+
+        if now - self._epcube_last_fast_poll >= ENL_EPCUBE_FAST_POLL_INTERVAL_SEC:
+            batches.extend(self._update_flag_batches_fast)
+            self._epcube_last_fast_poll = now
+
+        if now - self._epcube_last_slow_poll >= ENL_EPCUBE_SLOW_POLL_INTERVAL_SEC:
+            batches.extend(self._update_flag_batches_slow)
+            batches.extend(self._update_flag_batches_normal)
+            self._epcube_last_slow_poll = now
+
+        return batches
+
+    async def async_update_data(self, kwargs):
+        no_request = "no_request" in kwargs and kwargs["no_request"]
+        batches = self._select_update_batches(no_request)
+        if not batches:
+            return
+
+        update_data = await self._fetch_batches(batches, no_request)
         _LOGGER.debug(polling_update_debug_log(update_data, self))
         if len(update_data) > 0:
             self._update_data.update(update_data)
@@ -637,9 +720,11 @@ class ECHONETConnector:
                 self._update_flags_full_list.append(value)
                 self._update_data[value] = None
 
-        # EP Cube (Sungrow): EPCs whose entities should not poll (entity-level should_poll = False)
-        if self._manufacturer == "Sungrow":
-            self._epcube_poll_excluded = ENL_EPCUBE_NO_POLL_EPCS
+        # EP Cube (Sungrow): startup/slow EPC entities should not trigger polling.
+        if self._is_epcube_cadence_target():
+            self._epcube_poll_excluded = ENL_EPCUBE_NO_POLL_EPCS_BY_CLASS.get(
+                self._eojcc, frozenset()
+            )
         else:
             self._epcube_poll_excluded = frozenset()
 
@@ -649,26 +734,76 @@ class ECHONETConnector:
 
         return _prev_update_flags_full_list != self._update_flags_full_list
 
-    def _make_batch_request_flags(self):
-        # Split list of codes into batches of 10
-        self._update_flag_batches = []
+    def _split_batches(self, flags: list[int], batch_size_max: int) -> list[list[int]]:
+        batches: list[list[int]] = []
+        if not flags:
+            return batches
         start_index = 0
-        full_list_length = len(self._update_flags_full_list)
+        while start_index + batch_size_max < len(flags):
+            batches.append(flags[start_index : start_index + batch_size_max])
+            start_index += batch_size_max
+        batches.append(flags[start_index:])
+        return batches
 
-        # Make batch request flags
+    def _make_batch_request_flags(self):
+        # Build request batches.
         batch_size_max = self._user_options.get(
             CONF_BATCH_SIZE_MAX, MAX_UPDATE_BATCH_SIZE
         )
-        while start_index + batch_size_max < full_list_length:
-            self._update_flag_batches.append(
-                self._update_flags_full_list[start_index : start_index + batch_size_max]
+
+        if not self._is_epcube_cadence_target():
+            self._epcube_cadence_enabled = False
+            self._update_flag_batches = self._split_batches(
+                self._update_flags_full_list, batch_size_max
             )
-            start_index += batch_size_max
-        self._update_flag_batches.append(
-            self._update_flags_full_list[start_index:full_list_length]
+            _LOGGER.debug(
+                f"Echonet device {self._host}-{self._eojgc}-{self._eojcc}-{self._eojci} batch request flags list: {self._update_flag_batches}"
+            )
+            return
+
+        self._epcube_cadence_enabled = True
+        startup_epcs = ENL_EPCUBE_STARTUP_EPCS_BY_CLASS.get(self._eojcc, frozenset())
+        slow_epcs = ENL_EPCUBE_SLOW_EPCS_BY_CLASS.get(self._eojcc, frozenset())
+        fast_epcs = ENL_EPCUBE_FAST_EPCS_BY_CLASS.get(self._eojcc, frozenset())
+        categorized_epcs = startup_epcs | slow_epcs | fast_epcs
+
+        ordered_startup = [f for f in self._update_flags_full_list if f in startup_epcs]
+        ordered_slow = [f for f in self._update_flags_full_list if f in slow_epcs]
+        ordered_fast = [f for f in self._update_flags_full_list if f in fast_epcs]
+        ordered_normal = [
+            f for f in self._update_flags_full_list if f not in categorized_epcs
+        ]
+
+        self._update_flag_batches_startup = self._split_batches(
+            ordered_startup, batch_size_max
         )
+        self._update_flag_batches_slow = self._split_batches(ordered_slow, batch_size_max)
+        self._update_flag_batches_fast = self._split_batches(ordered_fast, batch_size_max)
+        self._update_flag_batches_normal = self._split_batches(
+            ordered_normal, batch_size_max
+        )
+
+        # Keep compatibility for callers expecting _update_flag_batches.
+        self._update_flag_batches = (
+            self._update_flag_batches_startup
+            + self._update_flag_batches_slow
+            + self._update_flag_batches_fast
+            + self._update_flag_batches_normal
+        )
+        self._epcube_startup_polled = False
+        self._epcube_last_slow_poll = 0.0
+        self._epcube_last_fast_poll = 0.0
+
         _LOGGER.debug(
-            f"Echonet device {self._host}-{self._eojgc}-{self._eojcc}-{self._eojci} batch request flags list: {self._update_flag_batches}"
+            "Echonet device %s-%s-%s-%s EP Cube batch tiers startup=%s slow=%s fast=%s normal=%s",
+            self._host,
+            self._eojgc,
+            self._eojcc,
+            self._eojci,
+            self._update_flag_batches_startup,
+            self._update_flag_batches_slow,
+            self._update_flag_batches_fast,
+            self._update_flag_batches_normal,
         )
 
     def register_async_update_callbacks(self, update_func):

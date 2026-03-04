@@ -53,19 +53,111 @@ from pychonet.lib.const import (
     ENL_INSTANTANEOUS_POWER,
 )
 
-# EP Cube (Sungrow): EPCs that do not need polling (entity-level should_poll = False).
-# Static/slow-changing or flappy; entities still get updates via connector refresh.
-ENL_EPCUBE_NO_POLL_EPCS = frozenset({
-    ENL_FAULT_STATUS,  # 0x88 – fault status (can flap)
-    0xC8,  # Min/max charging electric power (static/slow)
-    0xC9,  # Min/max discharging electric power (static/slow)
-    0x82,  # Standard version information
-    0x83,  # Identification number
-    0x8A,  # Manufacturer code
-    0xDB,  # System-interconnected type (storage battery)
-    0xD0,  # System-interconnected type (solar)
-    0xE6,  # Storage battery type / rated power (solar)
-})
+# EP Cube (Sungrow) cadence policy.
+ENL_EPCUBE_FAST_POLL_INTERVAL_SEC = 60
+ENL_EPCUBE_SLOW_POLL_INTERVAL_SEC = 600
+
+# Startup-only EPCs (read once at connector startup).
+ENL_EPCUBE_STARTUP_EPCS_BY_CLASS = {
+    0x7D: frozenset({
+        0x81,
+        0x82,
+        0x83,
+        0x8A,
+        0x97,
+        0x98,
+        0xD0,
+        0xD1,
+        0xD2,
+        0xE5,
+        0xE6,
+        0xEF,
+    }),
+    0x79: frozenset({
+        0x81,
+        0x82,
+        0x83,
+        0x88,
+        0x8A,
+        0x97,
+        0x98,
+        0xD0,
+    }),
+}
+
+# Slow tier EPCs (read every 10 minutes).
+ENL_EPCUBE_SLOW_EPCS_BY_CLASS = {
+    0x7D: frozenset({
+        0xA0,
+        0xA1,
+        0xA2,
+        0xA3,
+        0xA6,
+        0xA7,
+        0xAA,
+        0xAB,
+        0xC1,
+        0xC2,
+        0xC8,
+        0xC9,
+        0xCF,
+        0xDA,
+        0xE0,
+        0xE7,
+        0xE8,
+        0xEB,
+        0xEC,
+    }),
+    0x79: frozenset({
+        0xA0,
+        0xA1,
+        0xA2,
+        0xB2,
+        0xB4,
+        0xC1,
+        0xC2,
+        0xC3,
+        0xC4,
+        0xD1,
+        0xE5,
+    }),
+}
+
+# Fast tier EPCs (read every minute).
+ENL_EPCUBE_FAST_EPCS_BY_CLASS = {
+    0x7D: frozenset({
+        ENL_STATUS,
+        0xA4,
+        0xA5,
+        0xA8,
+        0xA9,
+        0xD3,
+        0xD6,
+        0xD8,
+        0xE2,
+        0xE3,
+        0xE4,
+    }),
+    0x79: frozenset({
+        ENL_STATUS,
+        0xE0,
+        0xE1,
+        0xE2,
+        0xE3,
+        0xE4,
+        0xE6,
+        0xE7,
+        0xE8,
+        0xE9,
+    }),
+}
+
+# Startup and slow EPCs never need entity-level polling.
+ENL_EPCUBE_NO_POLL_EPCS_BY_CLASS = {
+    key: ENL_EPCUBE_STARTUP_EPCS_BY_CLASS.get(key, frozenset())
+    | ENL_EPCUBE_SLOW_EPCS_BY_CLASS.get(key, frozenset())
+    for key in {0x79, 0x7D}
+}
 from pychonet.lib.epc_functions import DATA_STATE_CLOSE, DATA_STATE_OPEN
 from pychonet.CeilingFan import (
     ENL_BUZZER,

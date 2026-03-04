@@ -151,12 +151,15 @@ class EchonetTime(TimeEntity):
                 if self._server_state["available"]:
                     self.update_option_listener()
                 else:
-                    self._attr_should_poll = True
+                    self.update_option_listener()
             self._attr_available = self._server_state["available"]
             self.async_schedule_update_ha_state(_force)
 
     def update_option_listener(self):
-        _should_poll = self._code not in self._connector._ntfPropertyMap
+        _should_poll = (
+            self._code not in self._connector._ntfPropertyMap
+            and self._connector.should_entity_poll(self._code)
+        )
         self._attr_should_poll = (
             self._connector._user_options.get(CONF_FORCE_POLLING, False) or _should_poll
         )

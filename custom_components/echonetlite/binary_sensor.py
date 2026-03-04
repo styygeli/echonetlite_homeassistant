@@ -463,17 +463,14 @@ class EchonetBinarySensor(BinarySensorEntity):
                 if self._server_state["available"]:
                     self.update_option_listener()
                 else:
-                    self._attr_should_poll = True
+                    self.update_option_listener()
             self._attr_available = self._server_state["available"]
             self.async_schedule_update_ha_state(_force)
 
     def update_option_listener(self):
-        _no_poll_epcs = getattr(
-            self._connector, "_epcube_poll_excluded", frozenset()
-        )
         _should_poll = (
             self._op_code not in self._connector._ntfPropertyMap
-            and self._op_code not in _no_poll_epcs
+            and self._connector.should_entity_poll(self._op_code)
         )
         self._attr_should_poll = (
             self._connector._user_options.get(CONF_FORCE_POLLING, False) or _should_poll
