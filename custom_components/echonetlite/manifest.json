@@ -5,13 +5,13 @@
   "config_flow": true,
   "documentation": "https://www.github.com/scottyphillips/echonetlite_homeassistant",
   "requirements": [
-    "pychonet==2.6.18"
+    "pychonet @ https://github.com/styygeli/pychonet/archive/refs/tags/v2.6.19.tar.gz"
   ],
   "dependencies": [],
   "codeowners": [
     "@scottyphillips",
     "@nao-pon"
   ],
-  "version":  "3.8.10",
+  "version": "3.8.11",
   "iot_class": "local_polling"
 }
